@@ -305,6 +305,7 @@ class QueueManager:
     def __init__(self, conn: sqlite3.Connection, backoff_schedule: list[int],
                  reset_streak_after_successes: int = 3,
                  max_attempts_per_task: int = 20,
+                 max_attempts_per_task_external: Optional[int] = None,
                  own_host: Optional[str] = None):
         """
         own_host — хост самого форума (например, "listbb.ru"), обычно
@@ -319,11 +320,21 @@ class QueueManager:
         общий error_streak, как было до появления backoff по хостам. Это
         осознанный дефолт для обратной совместимости (например, в тестах,
         где own_host сейчас не передаётся).
+
+        max_attempts_per_task_external — отдельный (обычно более короткий)
+        лимит попыток для задач со сторонних хостов (host != own_host).
+        Если не передан (None) — используется max_attempts_per_task, как
+        и раньше (обратная совместимость).
         """
         self.conn = conn
         self.backoff_schedule = backoff_schedule
         self.reset_streak_after_successes = reset_streak_after_successes
         self.max_attempts_per_task = max_attempts_per_task
+        self.max_attempts_per_task_external = (
+            max_attempts_per_task_external
+            if max_attempts_per_task_external is not None
+            else max_attempts_per_task
+        )
         self.own_host = own_host
 
     # -- добавление задач ------------------------------------------------
@@ -616,7 +627,11 @@ class QueueManager:
 
         effective_streak = host_streak if (host and not count_globally) else streak
 
-        if attempts >= self.max_attempts_per_task:
+        task_max_attempts = (
+            self.max_attempts_per_task if count_globally else self.max_attempts_per_task_external
+        )
+
+        if attempts >= task_max_attempts:
             status = STATUS_FAILED
             next_attempt = None
             logger.error(

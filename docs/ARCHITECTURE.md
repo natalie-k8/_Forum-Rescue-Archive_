@@ -16,7 +16,9 @@ Forum Rescue Archive/
 │   ├── run_download_test.py         (тестовое скачивание форума №1)
 │   ├── run_forum2x2_download_test.py (тестовое скачивание forum2x2)
 │   ├── run_forum2x2_smoketest.py    (проверка парсера на одной странице)
-│   └── debug_login.py               (диагностика входа на форум №1)
+│   ├── debug_login.py               (диагностика входа на форум №1)
+│   └── backfill_css_imports.py      (доначинка @import внутри CSS для
+│                                        архивов, начатых до этого фикса)
 ├── parsers/                 ← разбор HTML конкретного движка форума
 │   ├── phpbb_parser.py
 │   └── forum2x2_parser.py
@@ -34,8 +36,16 @@ Forum Rescue Archive/
 │   │                            КАЖДОМ запуске, не только при первом
 │   ├── downloader.py        ← скачивание текста и ресурсов; умеет
 │   │                            ограничиваться выбранными разделами
-│   │                            (allowed_section_ids)
-│   └── rewrite_html.py      ← переписывание ссылок на локальные пути
+│   │                            (allowed_section_ids); после скачивания
+│   │                            CSS-файла разбирает @import внутри него
+│   │                            (backfill_css_imports — то же самое для
+│   │                            уже скачанных ранее CSS)
+│   ├── rewrite_html.py      ← переписывание ссылок на локальные пути
+│   │                            (в HTML и, отдельно, внутри самих
+│   │                            скачанных CSS-файлов)
+│   └── css_links.py         ← поиск @import/url(...) ВНУТРИ CSS —
+│                                общее для downloader.py (обнаружение) и
+│                                rewrite_html.py (переписывание)
 ├── utils/
 │   ├── config.py            ← настройки (AppConfig, config.json)
 │   ├── credentials.py       ← чтение логина/пароля из .env

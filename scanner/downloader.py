@@ -35,12 +35,14 @@ from datetime import datetime
 from typing import Optional
 
 from storage.archive_paths import topic_local_path, resource_local_path
+from scanner.css_links import extract_css_links
 from utils.config import AppConfig
 from utils.credentials import ForumCredentials
 from storage.database import (
-    QueueManager, get_topic, get_section_path, increment_topic_page_count,
+    QueueManager, Task, get_topic, get_section_path, increment_topic_page_count,
     write_progress_snapshot, TYPE_SECTION_PAGE, TYPE_TOPIC_PAGE,
     TYPE_IMAGE, TYPE_ATTACHMENT, TYPE_AVATAR, TYPE_SMILEY, TYPE_CSS,
+    STATUS_DONE,
 )
 from network.http_client import (
     ForumClient, FetchResult, BinaryFetchResult,
@@ -198,7 +200,46 @@ class Downloader:
         )
         return self.stats
 
-        return self.stats
+    def backfill_css_imports(self) -> int:
+        """
+        Разовая (но безопасно повторяемая) доначинка для CSS-файлов,
+        скачанных ДО того, как Downloader научился разбирать @import
+        внутри них (см. _enqueue_css_imports) — например, архив,
+        начатый до обновления программы. Не делает сетевых запросов сама:
+        читает уже скачанные CSS-файлы с диска, ищет в них @import/url(...)
+        и доставляет найденные ссылки в очередь тем же способом, каким
+        это происходит автоматически при свежем скачивании CSS — сами
+        файлы скачает следующий обычный запуск run().
+
+        Возвращает число вновь поставленных в очередь задач. Безопасно
+        запускать сколько угодно раз — add_task идемпотентен (уже
+        известный URL повторно не добавляется), поэтому повторный вызов
+        просто ничего не найдёт нового. Число новых задач считается по
+        реальному числу строк в tasks (не по self.stats.resources_discovered
+        — тот счётчик, как и в _enqueue_resources, растёт при каждом
+        вызове add_task независимо от того, была ли задача новой или уже
+        существовала, что для однократного вызова на свежей странице не
+        важно, но ломало бы идемпотентность именно этого метода).
+        """
+        archive_root = self.config.paths.archive_root
+        rows = self.conn.execute(
+            "SELECT * FROM tasks WHERE status = ? AND type = ?",
+            (STATUS_DONE, TYPE_CSS),
+        ).fetchall()
+
+        count_before = self.conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"]
+
+        for row in rows:
+            task = Task.from_row(row)
+            full_path = os.path.join(archive_root, task.local_path)
+            if not os.path.exists(full_path):
+                continue
+            with open(full_path, "rb") as f:
+                css_content = f.read()
+            self._enqueue_css_imports(task, css_content)
+
+        count_after = self.conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()["n"]
+        return count_after - count_before
 
     def _wait_for_backoff(self) -> None:
         """Ждет окончания backoff чанками, а не одним долгим sleep() —
@@ -262,6 +303,10 @@ class Downloader:
             save_bytes_atomic(final_path, result.content)
             self.qm.mark_task_done(task.id)
             self.stats.resources_saved += 1
+
+            if task.type == TYPE_CSS:
+                self._enqueue_css_imports(task, result.content)
+
             self.client.throttle_delay()
 
         elif result.status == STATUS_MISSING:
@@ -353,6 +398,39 @@ class Downloader:
         for link in links:
             local_path = resource_local_path(link.type, link.url)
             new_task_id = self.qm.add_task(link.type, link.url, local_path, parent_id=task.id)
+            if new_task_id:
+                self.stats.resources_discovered += 1
+
+    def _enqueue_css_imports(self, task, css_content: bytes) -> None:
+        """
+        Парсит только что скачанный CSS-файл на предмет @import url(...) /
+        url(...) на другие CSS-файлы (или картинки/шрифты) и добавляет их
+        в очередь как задачи типа css, с parent_id=task.id — тот же
+        механизм наследования section_id для выборочной архивации, что и
+        у обычных ресурсов со страницы (см. _enqueue_resources).
+
+        Нужно отдельно от _enqueue_resources, потому что типичный phpBB
+        style.css сам почти пустой и подключает 10+ других файлов
+        (normalize.css, base.css, common.css, colours.css, ...) через
+        @import — без этого шага они никогда не попадают в очередь на
+        скачивание, и итоговое оформление архива остаётся неполным даже
+        когда сам style.css успешно скачан.
+        """
+        try:
+            css_text = css_content.decode("utf-8", errors="replace")
+        except Exception:
+            return
+
+        links = extract_css_links(css_text, task.url)
+        for link in links:
+            # url(...) внутри CSS может указывать не только на другой CSS
+            # (@import), но и на картинку/шрифт (фон темы, @font-face) —
+            # кладём такие в images, а не в css, по расширению в самой
+            # ссылке (без query-параметров вроде "?v=3.2").
+            path_only = link.full_url.split("?", 1)[0].split("#", 1)[0]
+            resource_type = TYPE_CSS if path_only.lower().endswith(".css") else TYPE_IMAGE
+            local_path = resource_local_path(resource_type, link.full_url)
+            new_task_id = self.qm.add_task(resource_type, link.full_url, local_path, parent_id=task.id)
             if new_task_id:
                 self.stats.resources_discovered += 1
 

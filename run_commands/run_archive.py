@@ -240,6 +240,7 @@ def main():
         backoff_schedule=cfg.backoff.backoff_schedule_seconds,
         reset_streak_after_successes=cfg.backoff.reset_streak_after_successes,
         max_attempts_per_task=cfg.retry.max_attempts_per_task,
+        max_attempts_per_task_external=cfg.retry.max_attempts_per_task_external,
         own_host=urlparse(cfg.forum.base_url).netloc,
     )
 
@@ -302,13 +303,17 @@ def main():
 
         if mode == 2:
             print(f"\n--- Скачивание ресурсов ---\n")
-            res_stats = downloader.run(max_tasks=max_resource_tasks, wait_for_backoff=True,
-                                        allowed_section_ids=allowed_section_ids)
-            print("\n=== Результат скачивания ресурсов ===")
-            print(f"Ресурсов сохранено:  {res_stats.resources_saved}")
-            print(f"Ресурсов провалено:   {res_stats.resources_failed}")
-            print(f"Ресурсов пропущено:    {res_stats.resources_skipped_missing}")
-            print(f"Причина остановки:      {res_stats.stopped_reason}")
+            try:
+                res_stats = downloader.run(max_tasks=max_resource_tasks, wait_for_backoff=True,
+                                            allowed_section_ids=allowed_section_ids)
+                print("\n=== Результат скачивания ресурсов ===")
+                print(f"Ресурсов сохранено:  {res_stats.resources_saved}")
+                print(f"Ресурсов провалено:   {res_stats.resources_failed}")
+                print(f"Ресурсов пропущено:    {res_stats.resources_skipped_missing}")
+                print(f"Причина остановки:      {res_stats.stopped_reason}")
+            except KeyboardInterrupt:
+                print("\n\nОстановлено (Ctrl+C) во время скачивания ресурсов — "
+                      "переписываю уже скачанное перед выходом...")
 
             print("\n--- Переписывание HTML на локальные пути ---\n")
             rewrite_stats = rewrite_all_pages(cfg, conn)

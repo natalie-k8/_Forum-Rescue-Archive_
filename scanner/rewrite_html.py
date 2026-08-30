@@ -27,8 +27,9 @@ from typing import Optional
 from bs4 import BeautifulSoup
 
 from utils.config import AppConfig
-from storage.database import TYPE_SECTION_PAGE, TYPE_TOPIC_PAGE, STATUS_DONE
-from scanner.downloader import save_html_atomic
+from storage.database import TYPE_SECTION_PAGE, TYPE_TOPIC_PAGE, TYPE_CSS, STATUS_DONE
+from scanner.downloader import save_html_atomic, save_bytes_atomic
+from scanner.css_links import rewrite_css_links
 from utils.logger_setup import get_logger
 
 logger = get_logger()
@@ -39,6 +40,8 @@ class RewriteStats:
     pages_rewritten: int = 0
     links_replaced: int = 0
     pages_skipped_no_raw: int = 0
+    css_files_rewritten: int = 0
+    css_links_replaced: int = 0
 
 
 def _build_resource_url_map(conn, base_url: str) -> dict[str, str]:
@@ -101,13 +104,54 @@ def rewrite_page(html: str, base_url: str, page_local_path: str,
     return str(soup), replaced
 
 
+def _rewrite_all_css(config: AppConfig, conn, resource_map: dict[str, str], stats: RewriteStats) -> None:
+    """
+    Переписывает @import/url(...) ВНУТРИ каждого скачанного CSS-файла на
+    локальные пути (см. scanner/css_links.py — типичный phpBB style.css
+    сам почти пустой и подключает 10+ файлов вроде normalize.css,
+    base.css, colours.css через @import; без этого шага такие ссылки
+    остаются указывающими на исходный сервер, даже если сами файлы уже
+    скачаны и переписывание HTML прошло успешно).
+
+    В отличие от rewrite_page (для HTML), CSS-файлы не имеют отдельной
+    "сырой" копии — переписывается файл на его единственном месте в
+    архиве. Безопасно запускать повторно: уже переписанная (локальная,
+    относительная) ссылка не резолвится в известный абсолютный URL
+    ресурса и просто остаётся как есть при следующем проходе.
+    """
+    archive_root = config.paths.archive_root
+
+    rows = conn.execute(
+        "SELECT url, local_path FROM tasks WHERE status = ? AND type = ?",
+        (STATUS_DONE, TYPE_CSS),
+    ).fetchall()
+
+    for row in rows:
+        css_url = row["url"]
+        local_path = row["local_path"]
+        full_path = os.path.join(archive_root, local_path)
+
+        if not os.path.exists(full_path):
+            continue
+
+        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+            css_text = f.read()
+
+        new_css, replaced = rewrite_css_links(css_text, css_url, local_path, resource_map, _relative_path)
+        if replaced:
+            save_bytes_atomic(full_path, new_css.encode("utf-8"))
+            stats.css_files_rewritten += 1
+            stats.css_links_replaced += replaced
+
+
 def rewrite_all_pages(config: AppConfig, conn) -> RewriteStats:
     """
     Проходит по всем успешно скачанным текстовым страницам (section_page,
     topic_page) и переписывает их чистовые копии, заменяя ссылки на уже
     скачанные ресурсы локальными путями. Безопасно запускать повторно —
     каждый раз читает из оригинала (metadata/raw_html), а не поверх
-    предыдущего результата.
+    предыдущего результата. Заодно переписывает @import/url(...) внутри
+    самих скачанных CSS-файлов (см. _rewrite_all_css).
     """
     stats = RewriteStats()
     base_url = config.forum.base_url
@@ -140,8 +184,11 @@ def rewrite_all_pages(config: AppConfig, conn) -> RewriteStats:
         stats.pages_rewritten += 1
         stats.links_replaced += replaced
 
+    _rewrite_all_css(config, conn, resource_map, stats)
+
     logger.info(
         f"Переписывание завершено: {stats.pages_rewritten} страниц, "
-        f"{stats.links_replaced} ссылок заменено на локальные"
+        f"{stats.links_replaced} ссылок заменено на локальные; "
+        f"{stats.css_files_rewritten} CSS-файлов, {stats.css_links_replaced} ссылок внутри CSS заменено"
     )
     return stats

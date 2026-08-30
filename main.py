@@ -22,6 +22,7 @@ from run_commands import (
     run_forum2x2_download_test,
     run_forum2x2_smoketest,
     debug_login,
+    backfill_css_imports,
 )
 
 from utils.config import load_config, save_config
@@ -39,6 +40,7 @@ MENU = [
     ("Тестовое скачивание forum2x2 (run_forum2x2_download_test)", run_forum2x2_download_test),
     ("Пробный запрос одной страницы forum2x2, без сохранения (run_forum2x2_smoketest)", run_forum2x2_smoketest),
     ("Диагностика входа на форум №1 (debug_login)", debug_login),
+    ("Докачать вложенные CSS-файлы (@import) для уже скачанного архива (backfill_css_imports)", backfill_css_imports),
 ]
 
 CHANGE_MODE_CHOICE = "M"

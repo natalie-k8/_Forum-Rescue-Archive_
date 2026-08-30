@@ -119,6 +119,7 @@ def main():
         backoff_schedule=cfg.backoff.backoff_schedule_seconds,
         reset_streak_after_successes=cfg.backoff.reset_streak_after_successes,
         max_attempts_per_task=cfg.retry.max_attempts_per_task,
+        max_attempts_per_task_external=cfg.retry.max_attempts_per_task_external,
         own_host=urlparse(cfg.forum.base_url).netloc,
     )
 
